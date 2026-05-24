@@ -24,6 +24,7 @@
 - Single file, under 500 lines → keep as one `.py` file, no folder, keep the addon name as the filename
 - Single file, over 500 lines → propose converting to a folder with `__init__.py`, `operators.py`, `ui.py`, `utils.py` — wait for approval first
 - Already multi-file → propose wrapping in a folder if not already done — wait for approval
+- **Never use spaces in any Blender addon filename** — spaces cause install errors in Blender. Use underscores instead (e.g. `my_addon.py` not `my addon.py`). If a file has spaces in its name, rename it using underscores before doing anything else.
 
 #### Arduino / PlatformIO rules
 - Project should follow PlatformIO structure: `src/main.cpp`, `include/`, `lib/`, `platformio.ini`
