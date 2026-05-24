@@ -10,7 +10,7 @@ bl_info = {
 
 import bpy
 from collections import defaultdict
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 # --------- Utility Functions ---------
 
@@ -193,12 +193,8 @@ def is_useless_empty_by_name(obj_name, root_name):
     children = list(obj.children)
     if len(children) != 1:
         return False
-    child = children[0]
-    if child.type != 'EMPTY':
+    if children[0].type != 'EMPTY':
         return False
-    for c in children:
-        if c.type == 'MESH':
-            return False
     return True
 
 def clean_useless_empties(root):
@@ -215,9 +211,11 @@ def clean_useless_empties(root):
         if obj.name not in bpy.data.objects:
             continue
         child = obj.children[0]
-        child.matrix_world = child.matrix_world
-        child.parent = obj.parent
-        child.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
+        mat = child.matrix_world.copy()
+        new_parent = obj.parent
+        child.parent = new_parent
+        child.matrix_parent_inverse = new_parent.matrix_world.inverted() if new_parent else Matrix()
+        child.matrix_world = mat
         bpy.data.objects.remove(obj)
 
 def is_last_empty_with_object_by_name(obj_name, root_name):
@@ -237,7 +235,7 @@ def is_last_empty_with_object_by_name(obj_name, root_name):
         return False
     return True
 
-def replace_last_empty_with_object(root):
+def replace_last_empty_with_object(root, rename=False):
     root_name = root.name
     branch = collect_branch_objects_depth(root)
     branch.sort(key=lambda x: -x[1])
@@ -251,42 +249,26 @@ def replace_last_empty_with_object(root):
         if obj.name not in bpy.data.objects:
             continue
         child = obj.children[0]
-        child.matrix_world = child.matrix_world
-        child.parent = obj.parent
-        child.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
-        bpy.data.objects.remove(obj)
-
-def replace_last_empty_with_object_and_rename(root):
-    root_name = root.name
-    branch = collect_branch_objects_depth(root)
-    branch.sort(key=lambda x: -x[1])
-    to_delete = []
-    for obj_name, _ in branch:
-        if is_last_empty_with_object_by_name(obj_name, root_name):
-            obj = bpy.data.objects.get(obj_name)
-            if obj and obj.parent is not None:
-                to_delete.append(obj)
-    for obj in to_delete:
-        if obj.name not in bpy.data.objects:
-            continue
-        child = obj.children[0]
-        child.matrix_world = child.matrix_world
-        child.parent = obj.parent
-        child.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
-        try:
-            child.name = obj.name
-        except Exception:
-            pass
+        mat = child.matrix_world.copy()
+        new_parent = obj.parent
+        child.parent = new_parent
+        child.matrix_parent_inverse = new_parent.matrix_world.inverted() if new_parent else Matrix()
+        child.matrix_world = mat
+        if rename:
+            try:
+                child.name = obj.name
+            except Exception:
+                pass
         bpy.data.objects.remove(obj)
 
 def delete_empty_and_reparent_children(empty):
     parent = empty.parent
     children = list(empty.children)
     for child in children:
-        child.matrix_world = child.matrix_world
+        mat = child.matrix_world.copy()
         child.parent = parent
-        if parent is not None:
-            child.matrix_parent_inverse = parent.matrix_world.inverted()
+        child.matrix_parent_inverse = parent.matrix_world.inverted() if parent else Matrix()
+        child.matrix_world = mat
     bpy.data.objects.remove(empty)
 
 # --------- Operators ---------
@@ -327,7 +309,7 @@ class F360FBX_OT_replace_last_empty(bpy.types.Operator):
 
     def execute(self, context):
         root = context.active_object
-        replace_last_empty_with_object(root)
+        replace_last_empty_with_object(root, rename=False)
         self.report({'INFO'}, "Last empties replaced by their single child object in selected branch (kept object names).")
         return {'FINISHED'}
 
@@ -347,7 +329,7 @@ class F360FBX_OT_replace_last_empty_rename(bpy.types.Operator):
 
     def execute(self, context):
         root = context.active_object
-        replace_last_empty_with_object_and_rename(root)
+        replace_last_empty_with_object(root, rename=True)
         self.report({'INFO'}, "Last empties replaced by their single child object and renamed in selected branch.")
         return {'FINISHED'}
 
