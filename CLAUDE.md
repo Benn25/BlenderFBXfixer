@@ -1,5 +1,8 @@
-# Project: BlenderCLIrender
-A Blender addon for batch rendering via command line launcher.
+# Project: BlenderFBXfixer (Fusion 360 FBX Tools)
+A Blender addon that fixes transforms and cleans up the empty hierarchy produced when importing Fusion 360 FBX assembly exports into Blender. Sold on Gumroad.
+
+## Current file
+`F360_to_blender_FBX_fixer.py` — single file, ~512 lines. Keep as a single file (user decision).
 
 # My Working Preferences
 
