@@ -193,12 +193,8 @@ def is_useless_empty_by_name(obj_name, root_name):
     children = list(obj.children)
     if len(children) != 1:
         return False
-    child = children[0]
-    if child.type != 'EMPTY':
+    if children[0].type != 'EMPTY':
         return False
-    for c in children:
-        if c.type == 'MESH':
-            return False
     return True
 
 def clean_useless_empties(root):
