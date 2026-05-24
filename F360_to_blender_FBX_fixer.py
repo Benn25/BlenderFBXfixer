@@ -10,7 +10,7 @@ bl_info = {
 
 import bpy
 from collections import defaultdict
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 # --------- Utility Functions ---------
 
@@ -215,9 +215,11 @@ def clean_useless_empties(root):
         if obj.name not in bpy.data.objects:
             continue
         child = obj.children[0]
-        child.matrix_world = child.matrix_world
-        child.parent = obj.parent
-        child.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
+        mat = child.matrix_world.copy()
+        new_parent = obj.parent
+        child.parent = new_parent
+        child.matrix_parent_inverse = new_parent.matrix_world.inverted() if new_parent else Matrix()
+        child.matrix_world = mat
         bpy.data.objects.remove(obj)
 
 def is_last_empty_with_object_by_name(obj_name, root_name):
@@ -251,9 +253,11 @@ def replace_last_empty_with_object(root):
         if obj.name not in bpy.data.objects:
             continue
         child = obj.children[0]
-        child.matrix_world = child.matrix_world
-        child.parent = obj.parent
-        child.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
+        mat = child.matrix_world.copy()
+        new_parent = obj.parent
+        child.parent = new_parent
+        child.matrix_parent_inverse = new_parent.matrix_world.inverted() if new_parent else Matrix()
+        child.matrix_world = mat
         bpy.data.objects.remove(obj)
 
 def replace_last_empty_with_object_and_rename(root):
@@ -270,9 +274,11 @@ def replace_last_empty_with_object_and_rename(root):
         if obj.name not in bpy.data.objects:
             continue
         child = obj.children[0]
-        child.matrix_world = child.matrix_world
-        child.parent = obj.parent
-        child.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
+        mat = child.matrix_world.copy()
+        new_parent = obj.parent
+        child.parent = new_parent
+        child.matrix_parent_inverse = new_parent.matrix_world.inverted() if new_parent else Matrix()
+        child.matrix_world = mat
         try:
             child.name = obj.name
         except Exception:
@@ -283,10 +289,10 @@ def delete_empty_and_reparent_children(empty):
     parent = empty.parent
     children = list(empty.children)
     for child in children:
-        child.matrix_world = child.matrix_world
+        mat = child.matrix_world.copy()
         child.parent = parent
-        if parent is not None:
-            child.matrix_parent_inverse = parent.matrix_world.inverted()
+        child.matrix_parent_inverse = parent.matrix_world.inverted() if parent else Matrix()
+        child.matrix_world = mat
     bpy.data.objects.remove(empty)
 
 # --------- Operators ---------
