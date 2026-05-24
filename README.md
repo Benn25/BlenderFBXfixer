@@ -29,6 +29,8 @@ Select the root empty of your imported model and hit the button. The addon:
 ### Clean Useless Empty Cascades
 Removes redundant empty chains — any empty that only contains one other empty (with no geometry) gets collapsed out of the hierarchy. Keeps the meaningful structure, removes the noise.
 
+On a fairly complex Fusion 360 assembly, you can expect to divide the total object count by 2 or 3 just from this step alone.
+
 ### Replace Last Empty
 At the tips of the hierarchy tree, if an empty only wraps a single mesh object, it removes the empty and promotes the mesh up in its place. Two options:
 - **Replace + Rename** — the mesh takes the empty's name (useful when the empty has the part name you want to keep)
