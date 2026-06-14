@@ -1,7 +1,7 @@
 bl_info = {
-    "name": "Fusion 360 FBX Tools V3.7",
+    "name": "Fusion 360 FBX Tools V3.8",
     "author": "Benn",
-    "version": (3, 7, 0),
+    "version": (3, 8, 0),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > Edit Tab",
     "description": "Fixes transforms and cleans up empties in Fusion 360 FBX imports.",
@@ -179,44 +179,61 @@ def collect_branch_objects_depth(root, level=0, out=None):
         collect_branch_objects_depth(child, level+1, out)
     return out
 
-def is_useless_empty_by_name(obj_name, root_name):
-    if obj_name == root_name:
-        return False
-    obj = bpy.data.objects.get(obj_name)
-    root = bpy.data.objects.get(root_name)
-    if not obj or not root:
-        return False
-    if obj.type != 'EMPTY':
-        return False
-    if obj.parent and obj.parent.name == root_name:
-        return False
-    children = list(obj.children)
-    if len(children) != 1:
-        return False
-    if children[0].type != 'EMPTY':
-        return False
-    return True
+def is_childless_empty(obj):
+    """True if obj is an EMPTY with absolutely nothing parented to it.
+
+    These are pure dead ends left over from Fusion 360's component structure -
+    they don't hold a mesh, and they don't hold any other empty either.
+    """
+    return obj.type == 'EMPTY' and len(obj.children) == 0
+
+def is_single_empty_chain(obj):
+    """True if obj is an EMPTY whose only child is another EMPTY.
+
+    This is the "useless cascade" case: an empty that exists only to hold one
+    other empty, contributing nothing of its own.
+    """
+    children = obj.children
+    return obj.type == 'EMPTY' and len(children) == 1 and children[0].type == 'EMPTY'
 
 def clean_useless_empties(root):
     root_name = root.name
+    # Snapshot the branch once (name + depth). We process deepest-first so that,
+    # by the time we look at a given empty, all of its descendants have already
+    # been cleaned up - meaning obj.children below is always up to date.
     branch = collect_branch_objects_depth(root)
     branch.sort(key=lambda x: -x[1])
-    to_delete = []
+
     for obj_name, _ in branch:
-        if is_useless_empty_by_name(obj_name, root_name):
-            obj = bpy.data.objects.get(obj_name)
-            if obj and obj.parent is not None:
-                to_delete.append(obj)
-    for obj in to_delete:
-        if obj.name not in bpy.data.objects:
+        if obj_name == root_name:
             continue
-        child = obj.children[0]
-        mat = child.matrix_world.copy()
-        new_parent = obj.parent
-        child.parent = new_parent
-        child.matrix_parent_inverse = new_parent.matrix_world.inverted() if new_parent else Matrix()
-        child.matrix_world = mat
-        bpy.data.objects.remove(obj)
+        obj = bpy.data.objects.get(obj_name)
+        if not obj or obj.type != 'EMPTY' or obj.parent is None:
+            continue
+
+        # Re-checking children live (rather than from the snapshot) is what lets
+        # this cascade upward in a single pass: if we just emptied out this
+        # empty's only child below, this empty may now be childless too.
+        if is_childless_empty(obj):
+            bpy.data.objects.remove(obj)
+            continue
+
+        # Never collapse the root's direct children - this preserves the
+        # top-level "first child" structure of the model.
+        if obj.parent.name == root_name:
+            continue
+
+        if is_single_empty_chain(obj):
+            # Promote the single child empty up to this empty's parent, then
+            # remove this empty. matrix_world is saved/restored so the child
+            # (and everything under it) doesn't visually move.
+            child = obj.children[0]
+            mat = child.matrix_world.copy()
+            new_parent = obj.parent
+            child.parent = new_parent
+            child.matrix_parent_inverse = new_parent.matrix_world.inverted() if new_parent else Matrix()
+            child.matrix_world = mat
+            bpy.data.objects.remove(obj)
 
 def is_last_empty_with_object_by_name(obj_name, root_name):
     if obj_name == root_name:
@@ -409,8 +426,10 @@ class F360FBX_OT_clean_empties(bpy.types.Operator):
     bl_idname = "object.f360fbx_clean_empties"
     bl_label = "Clean Useless Empty Cascades"
     bl_description = (
-        "Remove useless cascades of parented empties (single empty within single empty, no objects). "
-        "Works on all selected empties and their descendants. Main empty's first child is preserved."
+        "Remove useless cascades of parented empties (single empty within single empty, no objects), "
+        "and remove empties that have nothing parented to them at all. "
+        "Works on all selected empties and their descendants. Main empty's first child is preserved "
+        "(unless it is completely empty)."
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -422,7 +441,7 @@ class F360FBX_OT_clean_empties(bpy.types.Operator):
         empties = [obj for obj in context.selected_objects if obj.type == 'EMPTY']
         for root in empties:
             clean_useless_empties(root)
-        self.report({'INFO'}, "Useless empty cascades cleaned in selected branches. Main empty's first child preserved.")
+        self.report({'INFO'}, "Useless empty cascades and childless empties cleaned in selected branches.")
         return {'FINISHED'}
 
 class F360FBX_OT_replace_last_empty(bpy.types.Operator):
@@ -532,7 +551,7 @@ class F360FBX_OT_recenter_empty(bpy.types.Operator):
 # --------- Unified Panel ---------
 
 class F360FBX_PT_tools(bpy.types.Panel):
-    bl_label = "Fusion 360 FBX Tools V3.7"
+    bl_label = "Fusion 360 FBX Tools V3.8"
     bl_idname = "F360FBX_PT_tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
