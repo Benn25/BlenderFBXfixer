@@ -1,7 +1,7 @@
 bl_info = {
-    "name": "Fusion 360 FBX Tools V3.6",
+    "name": "Fusion 360 FBX Tools V3.7",
     "author": "Benn",
-    "version": (3, 6, 0),
+    "version": (3, 7, 0),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > Edit Tab",
     "description": "Fixes transforms and cleans up empties in Fusion 360 FBX imports.",
@@ -271,6 +271,138 @@ def delete_empty_and_reparent_children(empty):
         child.matrix_world = mat
     bpy.data.objects.remove(empty)
 
+# --------- Recentre Empty to Geometry ---------
+
+def get_empty_geometry_center_world(empty):
+    """Find the center of the bounding box of all MESH objects below `empty`.
+
+    The bounding box is aligned to the EMPTY's own local axes (not the world
+    axes, and not a vertex average/median). We do this by transforming every
+    mesh bounding-box corner into the empty's local space, finding the min/max
+    box there, taking its center, and transforming that center back to world
+    space.
+
+    Returns a world-space Vector, or None if there are no meshes below the empty.
+    """
+    # Only meshes count toward the geometry; empties are excluded on purpose.
+    meshes = [o for o in collect_all_children(empty) if o.type == 'MESH']
+    if not meshes:
+        return None
+
+    # Matrix that converts a world position into the empty's local frame.
+    world_to_local = empty.matrix_world.inverted()
+
+    local_corners = []
+    for m in meshes:
+        for corner in m.bound_box:
+            # corner is in the mesh's own local space -> world -> empty's local space.
+            world_corner = m.matrix_world @ Vector(corner)
+            local_corners.append(world_to_local @ world_corner)
+
+    min_v = Vector((
+        min(c.x for c in local_corners),
+        min(c.y for c in local_corners),
+        min(c.z for c in local_corners),
+    ))
+    max_v = Vector((
+        max(c.x for c in local_corners),
+        max(c.y for c in local_corners),
+        max(c.z for c in local_corners),
+    ))
+    center_local = (min_v + max_v) * 0.5
+
+    # Back to world space using the empty's full transform.
+    return empty.matrix_world @ center_local
+
+def recenter_empties_to_geometry(empties, view_layer):
+    """Move each empty in `empties` to the center of its child geometry while
+    keeping every mesh exactly where it is in the world.
+
+    The tricky part is doing this without thousands of slow scene refreshes when
+    a whole branch is processed at once. So we work in two passes:
+
+      1. Snapshot pass: while every matrix is still valid, record each empty's
+         current world matrix, its direct children's world matrices, and the
+         target center we want to move it to. The target is an absolute world
+         point and never changes even if an ancestor empty also moves, so it is
+         safe to compute it once up front.
+
+      2. Apply pass: process shallow empties before deep ones, and compute each
+         object's new LOCAL matrix directly from the snapshots. Because we never
+         read a derived `matrix_world` after we start changing things, we don't
+         need a depsgraph refresh between objects.
+
+    Returns (moved_count, skipped_count). Skipped = empties with no mesh below.
+    """
+    empties = list(empties)
+    process_set = set(empties)
+
+    # Make sure every matrix_world is up to date before we read any of them.
+    view_layer.update()
+
+    # ---- Pass 1: snapshot everything we will need ----
+    orig_world = {}        # object -> world matrix at the start
+    direct_children = {}   # empty  -> list of its direct children
+    target_pos = {}        # empty  -> desired world location, or None to skip
+
+    for empty in empties:
+        orig_world[empty] = empty.matrix_world.copy()
+        kids = list(empty.children)
+        direct_children[empty] = kids
+        for c in kids:
+            orig_world[c] = c.matrix_world.copy()
+        # An unprocessed parent never actually moves, so its snapshot is also
+        # its final position; record it so the apply pass can reuse it.
+        if empty.parent is not None:
+            orig_world.setdefault(empty.parent, empty.parent.matrix_world.copy())
+        target_pos[empty] = get_empty_geometry_center_world(empty)
+
+    # ---- Pass 2: apply, shallowest first so a parent is placed before its child ----
+    ordered = sorted(empties, key=get_hierarchy_depth)
+    new_world = {}  # empty -> world matrix after moving
+    moved = 0
+    skipped = 0
+
+    for empty in ordered:
+        target = target_pos[empty]
+        if target is None:
+            skipped += 1
+            continue
+
+        # Same orientation and scale as before, just a new position.
+        desired = orig_world[empty].copy()
+        desired.translation = target
+
+        # Figure out the parent's world matrix (new one if the parent was also
+        # processed, otherwise its unchanged snapshot).
+        parent = empty.parent
+        if parent is None:
+            parent_world = None
+        elif parent in new_world:
+            parent_world = new_world[parent]
+        else:
+            parent_world = orig_world[parent]
+
+        # Solve for the local matrix that yields `desired` under this parent:
+        #   world = parent_world @ matrix_parent_inverse @ matrix_basis
+        if parent_world is None:
+            empty.matrix_basis = empty.matrix_parent_inverse.inverted() @ desired
+        else:
+            empty.matrix_basis = (parent_world @ empty.matrix_parent_inverse).inverted() @ desired
+        new_world[empty] = desired
+
+        # Keep each direct child pinned in world space. Child empties that we are
+        # also going to recentre are skipped here; they get placed on their turn.
+        for c in direct_children[empty]:
+            if c.type == 'EMPTY' and c in process_set:
+                continue
+            c.matrix_basis = (desired @ c.matrix_parent_inverse).inverted() @ orig_world[c]
+
+        moved += 1
+
+    view_layer.update()
+    return moved, skipped
+
 # --------- Operators ---------
 
 class F360FBX_OT_clean_empties(bpy.types.Operator):
@@ -352,10 +484,55 @@ class F360FBX_OT_delete_empty_reparent(bpy.types.Operator):
         self.report({'INFO'}, "Selected empties deleted and children reparented.")
         return {'FINISHED'}
 
+class F360FBX_OT_recenter_empty(bpy.types.Operator):
+    bl_idname = "object.f360fbx_recenter_empty"
+    bl_label = "Recentre Empty to Geometry"
+    bl_description = (
+        "Move selected empties to the center of their child geometry. The bounding "
+        "box is oriented like the empty, and all geometry stays exactly where it is. "
+        "Empties are excluded from the bounding box; empties with no mesh below are skipped"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    include_descendants: bpy.props.BoolProperty(
+        name="Include Child Empties",
+        default=False,
+        description="Also recentre every descendant empty, each to its own geometry"
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return any(obj.type == 'EMPTY' for obj in context.selected_objects)
+
+    def execute(self, context):
+        selected = [obj for obj in context.selected_objects if obj.type == 'EMPTY']
+
+        # Build the list of empties to process. With "include child empties" on,
+        # we add every descendant empty too. A set guards against duplicates when
+        # selected empties overlap or are nested.
+        to_process = []
+        seen = set()
+        for empty in selected:
+            group = [empty]
+            if self.include_descendants:
+                group.extend(o for o in collect_all_children(empty) if o.type == 'EMPTY')
+            for e in group:
+                if e.name not in seen:
+                    seen.add(e.name)
+                    to_process.append(e)
+
+        moved, skipped = recenter_empties_to_geometry(to_process, context.view_layer)
+        self.report(
+            {'INFO'},
+            "Recentred %d empt%s; skipped %d (no mesh geometry below them)."
+            % (moved, "y" if moved == 1 else "ies", skipped)
+        )
+        return {'FINISHED'}
+
 # --------- Unified Panel ---------
 
 class F360FBX_PT_tools(bpy.types.Panel):
-    bl_label = "Fusion 360 FBX Tools V3.6"
+    bl_label = "Fusion 360 FBX Tools V3.7"
     bl_idname = "F360FBX_PT_tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -413,6 +590,13 @@ class F360FBX_PT_tools(bpy.types.Panel):
         row.operator("object.f360fbx_replace_last_empty_rename", text="Replace + Rename", icon="OUTLINER_OB_MESH")
         row.operator("object.f360fbx_replace_last_empty", text="Replace (Keep Name)", icon="OUTLINER_OB_MESH")
         layout.operator("object.f360fbx_delete_empty_reparent", icon="TRASH")
+        layout.separator()
+        layout.label(text="Recentre empty to its geometry:", icon="PIVOT_BOUNDBOX")
+        row = layout.row(align=True)
+        op = row.operator("object.f360fbx_recenter_empty", text="Selected Only", icon="PIVOT_BOUNDBOX")
+        op.include_descendants = False
+        op = row.operator("object.f360fbx_recenter_empty", text="+ Child Empties", icon="PIVOT_BOUNDBOX")
+        op.include_descendants = True
 
 # --------- Registration ---------
 
@@ -422,6 +606,7 @@ def register():
     bpy.utils.register_class(F360FBX_OT_replace_last_empty)
     bpy.utils.register_class(F360FBX_OT_replace_last_empty_rename)
     bpy.utils.register_class(F360FBX_OT_delete_empty_reparent)
+    bpy.utils.register_class(F360FBX_OT_recenter_empty)
     bpy.utils.register_class(F360FBX_PT_tools)
     bpy.types.Scene.f360fbx_apply_rotation = bpy.props.BoolProperty(
         name="Apply Rotation", default=False)
@@ -487,6 +672,7 @@ def unregister():
     bpy.utils.unregister_class(F360FBX_OT_clean_empties)
     bpy.utils.unregister_class(F360FBX_OT_replace_last_empty)
     bpy.utils.unregister_class(F360FBX_OT_replace_last_empty_rename)
+    bpy.utils.unregister_class(F360FBX_OT_recenter_empty)
     bpy.utils.unregister_class(F360FBX_OT_delete_empty_reparent)
 
 if __name__ == "__main__":
